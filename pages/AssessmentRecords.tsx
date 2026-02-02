@@ -3,8 +3,8 @@ import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Student, Assessment, Curriculum } from '../types';
 import { updateStudent } from '../services/storageService';
-import { logAssessmentRecord } from '../services/cloudService';
-import { Plus, Trash2, TrendingUp, Loader2, Edit } from 'lucide-react';
+import { logAssessmentRecord, getStudentSyncData } from '../services/cloudService';
+import { Plus, Trash2, TrendingUp, Loader2, Edit, CloudDownload, RefreshCw } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from 'recharts';
@@ -13,6 +13,7 @@ const AssessmentRecords: React.FC = () => {
   const { student, refreshStudent, isReadOnly } = useOutletContext<{ student: Student, refreshStudent: () => Promise<void>, isReadOnly: boolean }>();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -30,6 +31,24 @@ const AssessmentRecords: React.FC = () => {
   const iconColor = isIGCSE ? 'text-blue-500' : 'text-green-500';
   const strokeColor = isIGCSE ? '#2563eb' : '#16a34a'; 
   const percentageColor = isIGCSE ? 'text-blue-700' : 'text-green-700';
+
+  const handleRestoreFromCloud = async () => {
+    setIsRestoring(true);
+    try {
+        const result = await getStudentSyncData(student.batch, student.id);
+        if (result.result === 'success' && result.data) {
+            await updateStudent(result.data);
+            await refreshStudent();
+            alert("Data successfully restored from your cloud profile!");
+        } else {
+            alert("We couldn't find any cloud data for your ID. Make sure your teacher has pushed your account to the cloud.");
+        }
+    } catch (e) {
+        alert("Restoration failed. Check your internet connection or cloud link in settings.");
+    } finally {
+        setIsRestoring(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,6 +144,25 @@ const AssessmentRecords: React.FC = () => {
         )}
       </div>
 
+      {/* --- Data Recovery Alert for Empty States --- */}
+      {!isReadOnly && student.assessments.length === 0 && (
+          <div className="bg-amber-50 border-2 border-dashed border-amber-200 p-8 rounded-3xl text-center animate-fade-in">
+              <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <RefreshCw size={32} />
+              </div>
+              <h3 className="text-xl font-bold text-amber-900 mb-2">Did your data disappear?</h3>
+              <p className="text-amber-700 max-w-lg mx-auto mb-6">If you have previously saved work to the cloud, you can restore it instantly using the button below.</p>
+              <button 
+                onClick={handleRestoreFromCloud}
+                disabled={isRestoring}
+                className="bg-amber-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-amber-700 flex items-center justify-center gap-2 mx-auto transition-all transform active:scale-95 disabled:opacity-50"
+              >
+                {isRestoring ? <Loader2 className="animate-spin" size={20}/> : <CloudDownload size={20}/>}
+                {isRestoring ? "Syncing with Cloud..." : "Restore My Data"}
+              </button>
+          </div>
+      )}
+
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
         <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800">
             <TrendingUp size={24} className={iconColor}/> Performance Trend
@@ -142,7 +180,7 @@ const AssessmentRecords: React.FC = () => {
                     </LineChart>
                 </ResponsiveContainer>
             ) : (
-                <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50 border border-dashed rounded-xl">No data available.</div>
+                <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50 border border-dashed rounded-xl font-bold italic">Start adding assessments to see your journey!</div>
             )}
         </div>
       </div>
@@ -170,8 +208,8 @@ const AssessmentRecords: React.FC = () => {
                             <td className="px-8 py-5">{a.type}</td>
                             <td className="px-8 py-5">{a.score}/{a.maxScore}</td>
                             <td className={`px-8 py-5 font-bold ${percentageColor}`}>{a.percentage}%</td>
-                            <td className="px-8 py-5 italic">{a.whatWentWell || '-'}</td>
-                            <td className="px-8 py-5 italic">{a.whatToImprove || '-'}</td>
+                            <td className="px-8 py-5 italic text-sm">{a.whatWentWell || '-'}</td>
+                            <td className="px-8 py-5 italic text-sm">{a.whatToImprove || '-'}</td>
                             {!isReadOnly && (
                                 <td className="px-8 py-5 text-right flex justify-end gap-2">
                                     <button onClick={() => handleEdit(a)} className="text-blue-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-full"><Edit size={18} /></button>
@@ -179,7 +217,7 @@ const AssessmentRecords: React.FC = () => {
                                 </td>
                             )}
                         </tr>
-                    )) : <tr><td colSpan={8} className="px-8 py-12 text-center text-gray-400">No assessments recorded.</td></tr>}
+                    )) : <tr><td colSpan={8} className="px-8 py-12 text-center text-gray-400 font-medium">No assessments recorded locally. Click 'Add Assessment' or 'Restore My Data'.</td></tr>}
                 </tbody>
             </table>
         </div>
@@ -187,27 +225,27 @@ const AssessmentRecords: React.FC = () => {
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl w-full max-w-2xl p-10 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-3xl w-full max-w-2xl p-10 max-h-[90vh] overflow-y-auto shadow-2xl">
             <h3 className="text-3xl font-bold mb-6 text-gray-900">{editingId ? 'Edit Assessment' : 'Add New Assessment'}</h3>
             <form onSubmit={handleSubmit} className="space-y-6">
-              <input required type="text" className="w-full border rounded-xl px-4 py-3" value={title} onChange={e => setTitle(e.target.value)} placeholder="Assessment Title" />
+              <input required type="text" className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500" value={title} onChange={e => setTitle(e.target.value)} placeholder="Assessment Title" />
               <div className="grid grid-cols-2 gap-6">
-                  <select className="w-full border rounded-xl px-4 py-3" value={type} onChange={(e) => setType(e.target.value as any)}>
+                  <select className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500" value={type} onChange={(e) => setType(e.target.value as any)}>
                     <option value="Formative">Formative</option>
                     <option value="Summative">Summative</option>
                   </select>
-                  <input type="date" className="w-full border rounded-xl px-4 py-3" value={date} onChange={(e) => setDate(e.target.value)} />
+                  <input type="date" className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500" value={date} onChange={(e) => setDate(e.target.value)} />
               </div>
               <div className="grid grid-cols-2 gap-6">
-                <input required type="number" className="w-full border rounded-xl px-4 py-3" value={score} onChange={e => setScore(e.target.value)} placeholder="Score" />
-                <input required type="number" className="w-full border rounded-xl px-4 py-3" value={maxScore} onChange={e => setMaxScore(e.target.value)} placeholder="Max Score" />
+                <input required type="number" className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500" value={score} onChange={e => setScore(e.target.value)} placeholder="Score" />
+                <input required type="number" className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500" value={maxScore} onChange={e => setMaxScore(e.target.value)} placeholder="Max Score" />
               </div>
-              <textarea required className="w-full border rounded-xl px-4 py-3 h-24" value={whatWentWell} onChange={e => setWhatWentWell(e.target.value)} placeholder="My Reflection..." />
-              <textarea required className="w-full border rounded-xl px-4 py-3 h-24" value={whatToImprove} onChange={e => setWhatToImprove(e.target.value)} placeholder="Action Plan..." />
-              <div className="flex justify-end gap-4">
+              <textarea required className="w-full border rounded-xl px-4 py-3 h-24 outline-none focus:ring-2 focus:ring-indigo-500" value={whatWentWell} onChange={e => setWhatWentWell(e.target.value)} placeholder="What went well? (Reflection)..." />
+              <textarea required className="w-full border rounded-xl px-4 py-3 h-24 outline-none focus:ring-2 focus:ring-indigo-500" value={whatToImprove} onChange={e => setWhatToImprove(e.target.value)} placeholder="Even better if... (Action Plan)..." />
+              <div className="flex justify-end gap-4 pt-4">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-3 text-gray-600 font-bold">Cancel</button>
-                <button type="submit" disabled={isSaving} className={`px-8 py-3 ${buttonBg} text-white font-bold rounded-xl flex gap-2 items-center`}>
-                    {isSaving && <Loader2 className="animate-spin" size={18} />} {editingId ? 'Update' : 'Save'}
+                <button type="submit" disabled={isSaving} className={`px-8 py-3 ${buttonBg} text-white font-bold rounded-xl flex gap-2 items-center shadow-md`}>
+                    {isSaving && <Loader2 className="animate-spin" size={18} />} {editingId ? 'Update Reflection' : 'Save & Cloud Log'}
                 </button>
               </div>
             </form>

@@ -1,7 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Book, Globe, ArrowRight, LogOut, KeyRound, Loader2, Lock, Settings, Image as ImageIcon, ShieldCheck, CheckCircle2, Zap } from 'lucide-react';
+import { Book, Globe, ArrowRight, LogOut, KeyRound, Loader2, Lock, Settings, Image as ImageIcon, ShieldCheck, CheckCircle2, Zap, Maximize, Minimize } from 'lucide-react';
 import { logout, changeAdminPassword } from '../services/auth';
 
 const SKMLogoLarge = () => (
@@ -25,6 +25,39 @@ const Welcome: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passError, setPassError] = useState('');
   const [isSavingPass, setIsSavingPass] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+    
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    const docEl = document.documentElement as any;
+    const doc = document as any;
+
+    if (!doc.fullscreenElement && !doc.mozFullScreenElement && !doc.webkitFullscreenElement && !doc.msFullscreenElement) {
+      if (docEl.requestFullscreen) docEl.requestFullscreen();
+      else if (docEl.msRequestFullscreen) docEl.msRequestFullscreen();
+      else if (docEl.mozRequestFullScreen) docEl.mozRequestFullScreen();
+      else if (docEl.webkitRequestFullscreen) docEl.webkitRequestFullscreen();
+    } else {
+      if (doc.exitFullscreen) doc.exitFullscreen();
+      else if (doc.msExitFullscreen) doc.msExitFullscreen();
+      else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
+      else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+    }
+  };
 
   const handlePasswordChange = async (e: React.FormEvent) => {
       e.preventDefault();
@@ -52,7 +85,18 @@ const Welcome: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center justify-center font-sans">
+    <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center justify-center font-sans relative">
+      {/* Utility Bar */}
+      <div className="absolute top-6 right-6 flex items-center gap-4">
+        <button 
+            onClick={toggleFullscreen}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-black shadow-lg transition-all transform active:scale-95 ${isFullscreen ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+        >
+            {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
+            <span>{isFullscreen ? 'EXIT FULL SCREEN' : 'FULL SCREEN'}</span>
+        </button>
+      </div>
+
       <div className="max-w-6xl w-full">
         <div className="flex flex-col md:flex-row justify-between items-center mb-16 gap-8 text-center md:text-left">
           <div className="animate-fade-in">

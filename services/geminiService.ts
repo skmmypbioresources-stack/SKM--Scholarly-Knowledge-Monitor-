@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Chat } from "@google/genai";
+import { GoogleGenAI, Chat, Type } from "@google/genai";
 import { ChallengeImage } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -197,4 +197,96 @@ export const analyzeAnswerScript = async (
         const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts: parts } });
         return response.text || "No analysis.";
     } catch (e) { return "Processing error."; }
+};
+
+export interface VisualMarking {
+    type: 'tick' | 'cross';
+    x: number; // 0-1000
+    y: number; // 0-1000
+    page: number; // 0-indexed page number
+    comment: string;
+}
+
+export interface AnalysisResult {
+    feedback: string;
+    markings: VisualMarking[];
+    achievedMarks: number;
+    totalMarks: number;
+}
+
+export const analyzeScriptWithVisualMarkers = async (
+    files: { base64: string, mimeType: string }[],
+    contextPrompt: string,
+    markingSchemeBase64?: string,
+    msMimeType: string = 'application/pdf'
+): Promise<AnalysisResult> => {
+    try {
+        const parts: any[] = [];
+        
+        // Add all script pages
+        files.forEach((file, index) => {
+            parts.push({ 
+                inlineData: { 
+                    mimeType: file.mimeType, 
+                    data: cleanBase64(file.base64) 
+                } 
+            });
+            parts.push({ text: `Student Answer Script - Page ${index + 1}` });
+        });
+
+        // Add Marking Scheme
+        if (markingSchemeBase64) {
+             parts.push({ inlineData: { mimeType: msMimeType, data: cleanBase64(markingSchemeBase64) } });
+             parts.push({ text: "Official Marking Scheme" });
+        }
+        
+        parts.push({ text: `
+            Act as a SENIOR IB MYP BIOLOGY EXAMINER. 
+            
+            STRICTNESS LEVEL: EXTREME.
+            
+            TASK:
+            1. You are provided with a multi-page answer script (sequential images/PDF pages).
+            2. Mark EVERY question across ALL pages against the marking scheme.
+            3. Award marks ONLY for correct scientific keywords.
+            4. SPATIAL ANNOTATION: For every mark (tick or cross), provide the EXACT (x, y) coordinates (0-1000) and the specific PAGE index (0 for first image, 1 for second, etc.) where that answer is written.
+            
+            Context: ${contextPrompt}
+            
+            Return JSON ONLY:
+            {
+              "feedback": "string (Formal report)",
+              "totalMarks": number,
+              "achievedMarks": number,
+              "markings": [
+                { 
+                  "type": "tick" | "cross", 
+                  "x": number, 
+                  "y": number, 
+                  "page": number (0-indexed index of the image provided),
+                  "comment": "Specific reason" 
+                }
+              ]
+            }
+        ` });
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-pro-preview',
+            contents: { parts },
+            config: {
+                responseMimeType: "application/json"
+            }
+        });
+
+        const data = JSON.parse(response.text || '{}');
+        return {
+            feedback: data.feedback || "No feedback generated.",
+            markings: data.markings || [],
+            totalMarks: typeof data.totalMarks === 'number' ? data.totalMarks : 0,
+            achievedMarks: typeof data.achievedMarks === 'number' ? data.achievedMarks : 0
+        };
+    } catch (e) {
+        console.error("Visual Analysis Error:", e);
+        return { feedback: "Processing error. Ensure all pages are readable.", markings: [], totalMarks: 0, achievedMarks: 0 };
+    }
 };

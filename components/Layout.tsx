@@ -11,7 +11,7 @@ import {
   ClipboardList, BrainCircuit, Settings as SettingsIcon, Loader2, ChevronDown,
   Cloud, RefreshCw, CheckCircle2, AlertCircle, Link as LinkIcon, WifiOff,
   Puzzle, Star, Keyboard, BookA, Trophy, Menu, PanelLeftClose, PanelLeftOpen,
-  Library, FileCheck2
+  Library, FileCheck2, Maximize, Minimize, DownloadCloud, UploadCloud, ExternalLink
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -46,9 +46,10 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
   
-  // Sidebar State
+  // Sidebar & Fullscreen State
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [syncMsg, setSyncMsg] = useState('');
@@ -60,11 +61,62 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
   const isStudentView = session?.type === 'STUDENT';
   const isIGCSE = student.curriculum === Curriculum.IGCSE;
 
-  // Dynamic Navigation Items based on Curriculum
+  // Determine if student has actual data
+  const hasLocalData = student.assessments.length > 0 || student.termAssessments.length > 0;
+
+  const toggleFullscreen = () => {
+    const docEl = document.documentElement as any;
+    const doc = document as any;
+
+    try {
+        if (!doc.fullscreenElement && !doc.mozFullScreenElement && !doc.webkitFullscreenElement && !doc.msFullscreenElement) {
+          const promise = docEl.requestFullscreen ? docEl.requestFullscreen() : 
+                         docEl.msRequestFullscreen ? docEl.msRequestFullscreen() : 
+                         docEl.mozRequestFullScreen ? docEl.mozRequestFullScreen() : 
+                         docEl.webkitRequestFullscreen ? docEl.webkitRequestFullscreen() : null;
+          
+          if (promise) {
+              promise.catch((err: any) => {
+                  console.warn("Fullscreen blocked by browser frame. Offering external window.");
+                  if(confirm("Full Screen is blocked by your current browser window/frame. Would you like to open the app in a new tab for a better experience?")) {
+                      window.open(window.location.href, '_blank');
+                  }
+              });
+          }
+          setIsFullscreen(true);
+        } else {
+          if (doc.exitFullscreen) doc.exitFullscreen();
+          else if (doc.msExitFullscreen) doc.msExitFullscreen();
+          else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
+          else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+          setIsFullscreen(false);
+        }
+    } catch (e) {
+        alert("Full Screen is not supported in this frame.");
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const doc = document as any;
+      setIsFullscreen(!!(doc.fullscreenElement || doc.mozFullScreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
   const academicItems = [
     { path: `${basePath}/records`, label: 'Assessment Records', icon: LayoutDashboard },
     { path: `${basePath}/school-exams`, label: 'Term Exams', icon: ClipboardList },
-    // SPLIT NAVIGATION
     { path: `${basePath}/assessment-tasks`, label: isIGCSE ? 'Assessment Tasks (AO)' : 'Assessment Tasks (Criteria)', icon: FileCheck2 },
     { path: `${basePath}/syllabus-library`, label: 'Syllabus Library', icon: Library },
   ];
@@ -114,29 +166,49 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
       check();
   }, [location.pathname]);
 
-  const handleStudentSave = async () => {
+  const handleStudentAction = async () => {
       if (!hasCloudUrl) {
           alert("Please go to Settings and enter the Teacher's Link first.");
           navigate(`${basePath}/settings`);
           return;
       }
-      setSyncStatus('loading');
-      setSyncMsg('Saving...');
       
-      try {
-          const result = await syncStudentData(student);
-          
-          if (result.result === 'success') {
-              setSyncStatus('success');
-              setSyncMsg('Saved!');
-          } else {
+      setSyncStatus('loading');
+
+      // If student has no assessments, try to PULL from cloud first (Restore)
+      if (!hasLocalData) {
+          setSyncMsg('Restoring...');
+          try {
+              const result = await getStudentSyncData(student.batch, student.id);
+              if (result.result === 'success' && result.data) {
+                  await updateStudent(result.data);
+                  setSyncStatus('success');
+                  setSyncMsg('Restored!');
+                  if (onRefresh) await onRefresh();
+              } else {
+                  setSyncStatus('error');
+                  setSyncMsg('No Cloud Data');
+              }
+          } catch (e) {
               setSyncStatus('error');
-              setSyncMsg('Failed');
+              setSyncMsg('Fetch Error');
           }
-      } catch (e) {
-          console.error(e);
-          setSyncStatus('error');
-          setSyncMsg('Error');
+      } else {
+          // Normal Save logic
+          setSyncMsg('Saving...');
+          try {
+              const result = await syncStudentData(student);
+              if (result.result === 'success') {
+                  setSyncStatus('success');
+                  setSyncMsg('Saved!');
+              } else {
+                  setSyncStatus('error');
+                  setSyncMsg('Save Failed');
+              }
+          } catch (e) {
+              setSyncStatus('error');
+              setSyncMsg('Cloud Error');
+          }
       }
       setTimeout(() => { setSyncStatus('idle'); setSyncMsg(''); }, 3000);
   };
@@ -147,24 +219,19 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
           return;
       }
       setSyncStatus('loading');
-      setSyncMsg('Loading...');
+      setSyncMsg('Syncing...');
       try {
           const result = await getStudentSyncData(student.batch, student.id);
-
           if (result.result === 'success' && result.data) {
               await updateStudent(result.data);
               setSyncStatus('success');
               setSyncMsg('Updated!');
-              
-              if (onRefresh) {
-                  await onRefresh();
-              }
+              if (onRefresh) await onRefresh();
           } else {
               setSyncStatus('error');
-              setSyncMsg('No Data');
+              setSyncMsg('Empty');
           }
       } catch (e) {
-          console.error(e);
           setSyncStatus('error');
           setSyncMsg('Error');
       }
@@ -173,23 +240,11 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans overflow-hidden">
-        {/* Mobile Backdrop */}
         {isMobileMenuOpen && (
-            <div 
-                className="fixed inset-0 bg-black/50 z-40 md:hidden backdrop-blur-sm transition-opacity"
-                onClick={() => setIsMobileMenuOpen(false)}
-            />
+            <div className="fixed inset-0 bg-black/50 z-40 md:hidden backdrop-blur-sm transition-opacity" onClick={() => setIsMobileMenuOpen(false)} />
         )}
 
-        {/* Sidebar */}
-        <aside 
-            className={`
-                fixed md:relative z-50 h-full bg-white border-r border-gray-200 flex flex-col transition-all duration-300 ease-in-out shadow-xl md:shadow-none
-                ${isCollapsed ? 'w-20' : 'w-72'}
-                ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-            `}
-        >
-            {/* Sidebar Header */}
+        <aside className={`fixed md:relative z-50 h-full bg-white border-r border-gray-200 flex flex-col transition-all duration-300 ease-in-out shadow-xl md:shadow-none ${isCollapsed ? 'w-20' : 'w-72'} ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
             <div className={`h-20 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between px-6'} border-b border-gray-100`}>
                 <button onClick={() => !isStudentView ? navigate('/welcome') : null} className="transition-transform active:scale-95">
                     <SKMLogo collapsed={isCollapsed} />
@@ -201,7 +256,6 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
                 )}
             </div>
 
-            {/* Navigation List */}
             <div className="flex-1 overflow-y-auto py-6 scrollbar-thin scrollbar-thumb-gray-200 hover:scrollbar-thumb-gray-300">
                 {navItems.map((group, groupIdx) => (
                     <div key={groupIdx} className="mb-6">
@@ -217,32 +271,10 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
                                 const isActive = location.pathname.startsWith(item.path);
                                 const Icon = item.icon;
                                 return (
-                                    <Link
-                                        key={item.path}
-                                        to={item.path}
-                                        title={isCollapsed ? item.label : ''}
-                                        onClick={() => setIsMobileMenuOpen(false)}
-                                        className={`
-                                            flex items-center gap-3 px-6 py-3.5 transition-all duration-200 group relative
-                                            ${isActive 
-                                                ? `${activeItemClass}` 
-                                                : 'text-gray-500 hover:bg-slate-50 hover:text-gray-900'
-                                            }
-                                        `}
-                                    >
-                                        <Icon 
-                                            size={22} 
-                                            className={`flex-shrink-0 transition-colors ${isActive ? (isIGCSE ? 'text-blue-600' : 'text-green-600') : 'text-gray-400 group-hover:text-gray-600'}`} 
-                                        />
-                                        
-                                        <span className={`font-medium whitespace-nowrap transition-all duration-300 ${isCollapsed ? 'opacity-0 w-0 hidden' : 'opacity-100'}`}>
-                                            {item.label}
-                                        </span>
-
-                                        {/* Active Indicator Dot for Collapsed Mode */}
-                                        {isCollapsed && isActive && (
-                                            <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-8 rounded-l-full ${isIGCSE ? 'bg-blue-600' : 'bg-green-600'}`}></div>
-                                        )}
+                                    <Link key={item.path} to={item.path} title={isCollapsed ? item.label : ''} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 px-6 py-3.5 transition-all duration-200 group relative ${isActive ? `${activeItemClass}` : 'text-gray-500 hover:bg-slate-50 hover:text-gray-900'}`}>
+                                        <Icon size={22} className={`flex-shrink-0 transition-colors ${isActive ? (isIGCSE ? 'text-blue-600' : 'text-green-600') : 'text-gray-400 group-hover:text-gray-600'}`} />
+                                        <span className={`font-medium whitespace-nowrap transition-all duration-300 ${isCollapsed ? 'opacity-0 w-0 hidden' : 'opacity-100'}`}>{item.label}</span>
+                                        {isCollapsed && isActive && <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-8 rounded-l-full ${isIGCSE ? 'bg-blue-600' : 'bg-green-600'}`}></div>}
                                     </Link>
                                 );
                             })}
@@ -251,7 +283,6 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
                 ))}
             </div>
 
-            {/* Sidebar Footer */}
             <div className="p-4 border-t border-gray-100">
                 {isCollapsed ? (
                     <button onClick={() => setIsCollapsed(false)} className="w-full flex justify-center p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
@@ -271,64 +302,39 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
             </div>
         </aside>
 
-        {/* Main Content Wrapper */}
         <div className="flex-1 flex flex-col min-w-0">
-             {/* Top Header */}
              <header className="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 z-20 shrink-0">
                  <div className="flex items-center gap-4">
-                     <button 
-                        onClick={() => setIsMobileMenuOpen(true)} 
-                        className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
-                     >
-                        <Menu size={24} />
-                     </button>
-                     
-                     <div className={`hidden sm:flex px-3 py-1.5 rounded-lg text-sm font-bold items-center gap-2 ${themeBg} ${themeText}`}>
-                         <span className="w-2 h-2 rounded-full bg-current"></span>
-                         {student.curriculum} Portal
-                     </div>
+                     <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg"><Menu size={24} /></button>
+                     <div className={`hidden sm:flex px-3 py-1.5 rounded-lg text-sm font-bold items-center gap-2 ${themeBg} ${themeText}`}><span className="w-2 h-2 rounded-full bg-current"></span>{student.curriculum} Portal</div>
                  </div>
 
                  <div className="flex items-center gap-4">
                      <button 
-                         onClick={isStudentView ? handleStudentSave : handleAdminLoad}
-                         disabled={syncStatus === 'loading'}
-                         className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm border ${
-                             syncStatus === 'success' ? 'bg-green-100 text-green-700 border-green-200' :
-                             syncStatus === 'error' ? 'bg-red-100 text-red-700 border-red-200' :
-                             'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                         }`}
+                         onClick={toggleFullscreen}
+                         className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-black text-xs transition-all shadow-lg transform active:scale-95 ${isFullscreen ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
                      >
-                         {syncStatus === 'loading' ? <Loader2 className="animate-spin" size={16}/> : 
-                          syncStatus === 'success' ? <CheckCircle2 size={16}/> :
-                          syncStatus === 'error' ? <AlertCircle size={16}/> :
-                          isStudentView ? <Cloud size={16}/> : <RefreshCw size={16}/>}
-                         <span className="hidden sm:inline">{syncMsg || (isStudentView ? "Save to Cloud" : "Load Data")}</span>
+                         {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
+                         <span className="hidden sm:inline">{isFullscreen ? "EXIT FULLSCREEN" : "FULL SCREEN"}</span>
+                     </button>
+
+                     <button onClick={isStudentView ? handleStudentAction : handleAdminLoad} disabled={syncStatus === 'loading'} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm border ${syncStatus === 'success' ? 'bg-green-100 text-green-700 border-green-200' : syncStatus === 'error' ? 'bg-red-100 text-red-700 border-red-200' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                         {syncStatus === 'loading' ? <Loader2 className="animate-spin" size={16}/> : syncStatus === 'success' ? <CheckCircle2 size={16}/> : syncStatus === 'error' ? <AlertCircle size={16}/> : (isStudentView ? (!hasLocalData ? <DownloadCloud size={16}/> : <Cloud size={16}/>) : <RefreshCw size={16}/>)}
+                         <span className="hidden sm:inline">{syncMsg || (isStudentView ? (!hasLocalData ? "Restore Cloud Data" : "Save to Cloud") : "Update Data")}</span>
                      </button>
 
                      <div className="h-8 w-px bg-gray-200"></div>
 
-                     {/* Profile Dropdown */}
                      <div className="relative" ref={profileRef}>
-                          <button 
-                             onClick={() => setIsProfileOpen(!isProfileOpen)} 
-                             className="flex items-center gap-2 p-1.5 pr-3 rounded-full hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-200"
-                          >
-                              <div className="bg-slate-100 p-1.5 rounded-full">
-                                  <UserCircle className="text-slate-600" size={24} />
-                              </div>
+                          <button onClick={() => setIsProfileOpen(!isProfileOpen)} className="flex items-center gap-2 p-1.5 pr-3 rounded-full hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-200">
+                              <div className="bg-slate-100 p-1.5 rounded-full"><UserCircle className="text-slate-600" size={24} /></div>
                               <ChevronDown size={16} className="text-gray-400" />
                           </button>
                           
                           {isProfileOpen && (
                             <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50 animate-fade-in">
-                                <div className="p-4 border-b border-gray-50">
-                                    <p className="text-sm font-bold text-gray-900">{student.name}</p>
-                                    <p className="text-xs text-gray-500">ID: {student.id}</p>
-                                </div>
-                                <button onClick={() => { logout(); navigate('/login'); }} className="w-full flex items-center gap-2 text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 font-bold transition-colors">
-                                    <LogOut size={16} /> Sign Out
-                                </button>
+                                <div className="p-4 border-b border-gray-50"><p className="text-sm font-bold text-gray-900">{student.name}</p><p className="text-xs text-gray-500">ID: {student.id}</p></div>
+                                <button onClick={() => { logout(); navigate('/login'); }} className="w-full flex items-center gap-2 text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 font-bold transition-colors"><LogOut size={16} /> Sign Out</button>
                             </div>
                           )}
                      </div>
@@ -336,17 +342,12 @@ const Layout: React.FC<LayoutProps> = ({ student, children, onRefresh }) => {
              </header>
 
              {!checkingUrl && !hasCloudUrl && isStudentView && (
-                 <div onClick={() => navigate(`${basePath}/settings`)} className="bg-red-600 text-white text-center py-2 px-4 flex items-center justify-center gap-3 text-sm font-bold cursor-pointer hover:bg-red-700 transition-colors shadow-inner">
-                     <WifiOff size={16} /> <span>NOT CONNECTED TO TEACHER - CLICK TO CONFIGURE</span>
-                 </div>
+                 <div onClick={() => navigate(`${basePath}/settings`)} className="bg-red-600 text-white text-center py-2 px-4 flex items-center justify-center gap-3 text-sm font-bold cursor-pointer hover:bg-red-700 transition-colors shadow-inner"><WifiOff size={16} /> <span>NOT CONNECTED TO TEACHER - CLICK TO CONFIGURE</span></div>
              )}
 
-             {/* Scrollable Main Area */}
              <main className="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-8 scroll-smooth">
-                 <div className="max-w-7xl mx-auto">
-                    {children}
-                 </div>
-                 <div className="h-12"></div> {/* Spacer */}
+                 <div className="max-w-7xl mx-auto">{children}</div>
+                 <div className="h-12"></div>
              </main>
         </div>
     </div>

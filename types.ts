@@ -89,6 +89,13 @@ export interface TuitionReflection {
   questions: string;
 }
 
+export interface StudentWork {
+  id: string;
+  name: string;
+  url: string;
+  date: string;
+}
+
 export interface BehaviorRecord {
   id: string;
   date: string;
@@ -192,6 +199,7 @@ export interface Student {
   attendance: AttendanceRecord[]; 
   tuitionTasks: TuitionTask[];
   tuitionReflections: TuitionReflection[];
+  tuitionWork?: StudentWork[];
   differentiationResources: Resource[];
   targetGrade?: string; 
   chatHistory?: ChatMessage[]; 

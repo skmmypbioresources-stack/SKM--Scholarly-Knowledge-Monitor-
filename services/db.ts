@@ -1,8 +1,8 @@
 
 import { Student, Topic, Assessment, Resource, BatchResource, ChallengeImage, AssessmentTask, SyllabusPortion } from '../types';
 
-const DB_NAME = 'StudentTrackerPro_DB';
-const DB_VERSION = 34; 
+const DB_NAME = 'SKM_Persistent_DB_v1';
+const DB_VERSION = 35; 
 const STORE_STUDENTS = 'students';
 const STORE_FILES = 'files';
 const STORE_SETTINGS = 'settings';
@@ -73,11 +73,10 @@ export const initDB = async (): Promise<void> => {
         if (!adminPwRequest.result) settingsStore.put('skm', 'admin_password');
     };
 
-    // FIX: Pre-load the user's specific Automation URL so it's never "deleted" or "empty"
+    // Ensure Cloud URL is pre-set
     const cloudUrlRequest = settingsStore.get('cloud_script_url');
     cloudUrlRequest.onsuccess = () => {
         const teacherProvidedUrl = 'https://script.google.com/macros/s/AKfycbwhB6X5TvvTwkHeAkmvISbNy6a8RPnEdWhqfEhQXDlGOGV-jsbMijaD_liLsoguSFGC/exec';
-        // We always ensure the link is populated if currently empty
         if (!cloudUrlRequest.result) {
             settingsStore.put(teacherProvidedUrl, 'cloud_script_url');
         }

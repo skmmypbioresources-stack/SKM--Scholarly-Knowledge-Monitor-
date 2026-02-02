@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { HashRouter, Routes, Route, Outlet, useParams, Navigate } from 'react-router-dom';
 import Welcome from './pages/Welcome';
@@ -28,8 +29,10 @@ import GrowthScore from './pages/GrowthScore';
 
 import { getStudentById, initDB } from './services/storageService';
 import { getCurrentSession, isAuthorized } from './services/auth';
+import { getStudentSyncData } from './services/cloudService';
+import { updateStudent } from './services/storageService';
 import { Student } from './types';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RefreshCw } from 'lucide-react';
 
 const AdminRoute = () => {
     const session = getCurrentSession();
@@ -42,6 +45,7 @@ const StudentRouteWrapper: React.FC = () => {
   const { studentId } = useParams<{ studentId: string }>();
   const [student, setStudent] = useState<Student | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRecovering, setIsRecovering] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   
   const session = getCurrentSession();
@@ -55,7 +59,9 @@ const StudentRouteWrapper: React.FC = () => {
      if (studentId) {
         const s = await getStudentById(studentId); 
         setStudent(s || null); 
+        return s;
      }
+     return null;
   };
 
   useEffect(() => {
@@ -63,7 +69,29 @@ const StudentRouteWrapper: React.FC = () => {
           setAuthorized(true);
           const loadData = async () => {
              try {
-                await refreshStudent();
+                const currentData = await refreshStudent();
+                
+                // --- SELF-HEALING / DATA RECOVERY LOGIC ---
+                // If local data is empty, attempt an auto-restore from Cloud
+                if (currentData && !isAdmin) {
+                    const hasLocalData = currentData.assessments.length > 0 || currentData.termAssessments.length > 0;
+                    if (!hasLocalData) {
+                        console.log("Empty local state detected. Attempting auto-recovery...");
+                        setIsRecovering(true);
+                        try {
+                            const cloudRes = await getStudentSyncData(currentData.batch, currentData.id);
+                            if (cloudRes.result === 'success' && cloudRes.data) {
+                                await updateStudent(cloudRes.data);
+                                await refreshStudent();
+                                console.log("Data recovered successfully.");
+                            }
+                        } catch (e) {
+                            console.error("Auto-recovery failed", e);
+                        } finally {
+                            setIsRecovering(false);
+                        }
+                    }
+                }
              } catch (e) { 
                  console.error(e); 
              } finally { 
@@ -74,7 +102,7 @@ const StudentRouteWrapper: React.FC = () => {
       } else { setAuthorized(false); setLoading(false); }
   }, [studentId]);
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-blue-600"/></div>;
+  if (loading) return <div className="h-screen flex flex-col items-center justify-center gap-4 bg-slate-50"><Loader2 className="animate-spin text-indigo-600" size={40}/><p className="font-bold text-slate-400">Loading Student Portal...</p></div>;
   if (!authorized) return <Navigate to="/login" replace />;
   if (!student) return <div className="h-screen flex items-center justify-center">Student not found.</div>;
 
@@ -92,9 +120,17 @@ const StudentRouteWrapper: React.FC = () => {
   }
 
   return (
-    <Layout student={student} onRefresh={refreshStudent}>
-      <Outlet context={{ student, isReadOnly, refreshStudent }} />
-    </Layout>
+    <div className="relative h-screen overflow-hidden">
+        {isRecovering && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] bg-indigo-600 text-white px-6 py-2 rounded-full shadow-2xl flex items-center gap-3 animate-bounce">
+                <RefreshCw size={18} className="animate-spin"/>
+                <span className="font-bold text-sm">Recovering your data from Cloud...</span>
+            </div>
+        )}
+        <Layout student={student} onRefresh={refreshStudent}>
+          <Outlet context={{ student, isReadOnly, refreshStudent }} />
+        </Layout>
+    </div>
   );
 };
 
