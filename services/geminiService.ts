@@ -5,12 +5,12 @@ import { ChallengeImage } from "../types";
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const STRICT_PRECISION_PROMPT = `
-STRICT RULES FOR AI:
-1. NEVER hallucinate facts or invent biological terms.
-2. If you are unsure or the data is missing, state "Insufficient information."
-3. Stick strictly to IGCSE/MYP Biology marking standards.
-4. Be extremely precise and concise. No conversational filler.
-5. For grading, use ONLY the provided context/marking scheme.
+STRICT RULES FOR AI EXAMINER:
+1. ACCURACY: You are a Senior Examiner. Hallucinations are a firing offense.
+2. NO GUESSING: If a question is in the marking scheme but NOT in the student script, you MUST mark it "0 Marks" and state "Question not attempted".
+3. MATH: The 'achievedMarks' total MUST be the exact mathematical sum of all individual 'marksAwarded'.
+4. TERMINOLOGY: Use only official IGCSE/MYP Biology marking scheme vocabulary.
+5. CONCISENESS: Be brisk and precise. No fluff.
 `;
 
 const cleanBase64 = (base64: string) => {
@@ -39,7 +39,7 @@ export const createTaskTutorSession = (studentName: string, taskTitle: string, t
       Task: ${taskDescription}
       Context: ${contextPrompt}
       ${STRICT_PRECISION_PROMPT}
-      Scaffold the learning. Check understanding. Do not hallucinate improvements.`,
+      Scaffold the learning. Check understanding.`,
     },
   });
 };
@@ -207,11 +207,24 @@ export interface VisualMarking {
     comment: string;
 }
 
+export interface QuestionBreakdown {
+    questionRef: string;
+    marksAwarded: number;
+    maxMarks: number;
+    remark: string; 
+    improvementTip: string;
+}
+
 export interface AnalysisResult {
-    feedback: string;
+    isValidScript: boolean;
+    validationMessage?: string;
+    feedbackSummary: string;
+    questionAnalysis: QuestionBreakdown[];
     markings: VisualMarking[];
     achievedMarks: number;
     totalMarks: number;
+    strengths: string[];
+    weaknesses: string[];
 }
 
 export const analyzeScriptWithVisualMarkers = async (
@@ -223,70 +236,87 @@ export const analyzeScriptWithVisualMarkers = async (
     try {
         const parts: any[] = [];
         
-        // Add all script pages
         files.forEach((file, index) => {
-            parts.push({ 
-                inlineData: { 
-                    mimeType: file.mimeType, 
-                    data: cleanBase64(file.base64) 
-                } 
-            });
+            parts.push({ inlineData: { mimeType: file.mimeType, data: cleanBase64(file.base64) } });
             parts.push({ text: `Student Answer Script - Page ${index + 1}` });
         });
 
-        // Add Marking Scheme
         if (markingSchemeBase64) {
              parts.push({ inlineData: { mimeType: msMimeType, data: cleanBase64(markingSchemeBase64) } });
              parts.push({ text: "Official Marking Scheme" });
         }
         
         parts.push({ text: `
-            Act as a SENIOR IB MYP BIOLOGY EXAMINER. 
+            Act as an ELITE SENIOR BIOLOGY EXAMINER. 
             
-            STRICTNESS LEVEL: EXTREME.
+            DIAGNOSTIC PROTOCOL (ZERO HALLUCINATION):
+            1. INTEGRITY CHECK: Compare Student Script vs Marking Scheme for: ${contextPrompt}. 
+               If mismatch, set "isValidScript": false and describe the error in "validationMessage".
             
-            TASK:
-            1. You are provided with a multi-page answer script (sequential images/PDF pages).
-            2. Mark EVERY question across ALL pages against the marking scheme.
-            3. Award marks ONLY for correct scientific keywords.
-            4. SPATIAL ANNOTATION: For every mark (tick or cross), provide the EXACT (x, y) coordinates (0-1000) and the specific PAGE index (0 for first image, 1 for second, etc.) where that answer is written.
+            2. FULL ENUMERATION: Identify EVERY question number (e.g., Q1 to Q43) present in the Marking Scheme.
             
-            Context: ${contextPrompt}
+            3. STRICT GRADING:
+               - If a question is found in the script: Mark it exactly against the scheme.
+               - If a question is NOT found (e.g. script stops at Q20): You MUST award 0 Marks for all remaining questions (Q21-Q43).
+               - DO NOT assume answers for missing pages or questions.
+            
+            4. PEDAGOGY:
+               - "remark": Technical explanation of the score.
+               - "improvementTip": A specific "Teacher's Pro Tip" on phrasing or scientific concepts. MANDATORY for all questions.
+            
+            5. FINAL MATH: Total "achievedMarks" MUST equal the sum of "marksAwarded" in the list.
             
             Return JSON ONLY:
             {
-              "feedback": "string (Formal report)",
+              "isValidScript": boolean,
+              "validationMessage": "string",
+              "feedbackSummary": "string",
               "totalMarks": number,
               "achievedMarks": number,
-              "markings": [
-                { 
-                  "type": "tick" | "cross", 
-                  "x": number, 
-                  "y": number, 
-                  "page": number (0-indexed index of the image provided),
-                  "comment": "Specific reason" 
+              "questionAnalysis": [
+                {
+                   "questionRef": "string (e.g. Q1)",
+                   "marksAwarded": number,
+                   "maxMarks": number,
+                   "remark": "string",
+                   "improvementTip": "string"
                 }
-              ]
+              ],
+              "markings": [
+                { "type": "tick" | "cross", "x": number, "y": number, "page": number, "comment": "string" }
+              ],
+              "strengths": ["string"],
+              "weaknesses": ["string"]
             }
         ` });
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-preview',
+            model: 'gemini-3-flash-preview',
             contents: { parts },
-            config: {
-                responseMimeType: "application/json"
-            }
+            config: { responseMimeType: "application/json" }
         });
 
         const data = JSON.parse(response.text || '{}');
+        
+        // Final sanity check on sum to prevent hallucinated totals
+        let calculatedSum = 0;
+        if (Array.isArray(data.questionAnalysis)) {
+            data.questionAnalysis.forEach((q: any) => calculatedSum += (q.marksAwarded || 0));
+        }
+
         return {
-            feedback: data.feedback || "No feedback generated.",
+            isValidScript: data.isValidScript !== false,
+            validationMessage: data.validationMessage || "Script/Assessment mismatch.",
+            feedbackSummary: data.feedbackSummary || "Diagnostic complete.",
+            questionAnalysis: data.questionAnalysis || [],
             markings: data.markings || [],
             totalMarks: typeof data.totalMarks === 'number' ? data.totalMarks : 0,
-            achievedMarks: typeof data.achievedMarks === 'number' ? data.achievedMarks : 0
+            achievedMarks: calculatedSum, // Trust the sum over a hallucinated total
+            strengths: Array.isArray(data.strengths) ? data.strengths : [],
+            weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses : []
         };
     } catch (e) {
-        console.error("Visual Analysis Error:", e);
-        return { feedback: "Processing error. Ensure all pages are readable.", markings: [], totalMarks: 0, achievedMarks: 0 };
+        console.error("High-Speed Precise Analysis Error:", e);
+        return { isValidScript: true, feedbackSummary: "Error.", questionAnalysis: [], markings: [], totalMarks: 0, achievedMarks: 0, strengths: [], weaknesses: [] };
     }
 };
