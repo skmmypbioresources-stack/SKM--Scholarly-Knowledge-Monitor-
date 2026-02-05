@@ -3,8 +3,8 @@ import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Student, Assessment, Curriculum } from '../types';
 import { updateStudent } from '../services/storageService';
-import { logAssessmentRecord, getStudentSyncData } from '../services/cloudService';
-import { Plus, Trash2, TrendingUp, Loader2, Edit, CloudDownload, RefreshCw } from 'lucide-react';
+import { logAssessmentRecord, deleteAssessmentFromCloud, getStudentSyncData, syncStudentData } from '../services/cloudService';
+import { Plus, Trash2, TrendingUp, Loader2, Edit, CloudDownload, RefreshCw, ShieldCheck, AlertTriangle } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from 'recharts';
@@ -14,6 +14,7 @@ const AssessmentRecords: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -35,16 +36,25 @@ const AssessmentRecords: React.FC = () => {
   const handleRestoreFromCloud = async () => {
     setIsRestoring(true);
     try {
+        // Step 1: Wipe local assessments temporarily to ensure clean sync
+        const preWipeStudent = { ...student, assessments: [] };
+        await updateStudent(preWipeStudent);
+
+        // Step 2: Fetch clean data from Cloud Soul
         const result = await getStudentSyncData(student.batch, student.id);
         if (result.result === 'success' && result.data) {
+            // Step 3: Apply the cloud data exactly
             await updateStudent(result.data);
             await refreshStudent();
-            alert("Data successfully restored from your cloud profile!");
+            alert("Sync Complete! Your dashboard now matches the Spreadsheet exactly.");
         } else {
-            alert("We couldn't find any cloud data for your ID. Make sure your teacher has pushed your account to the cloud.");
+            alert("No data found in the spreadsheet for ID: " + student.id);
+            // Re-revert to old state if failed
+            await updateStudent(student);
         }
     } catch (e) {
-        alert("Restoration failed. Check your internet connection or cloud link in settings.");
+        alert("Restoration failed. Check your Teacher's Link in Settings.");
+        await updateStudent(student);
     } finally {
         setIsRestoring(false);
     }
@@ -60,12 +70,12 @@ const AssessmentRecords: React.FC = () => {
     setIsSaving(true);
 
     const assessmentData: Assessment = {
-      id: editingId || Date.now().toString(),
+      id: editingId || `loc_${Date.now()}_${title.replace(/\s+/g, '')}`,
       title,
       date,
       score: s,
       maxScore: m,
-      percentage: Math.round((s / m) * 100),
+      percentage: Math.round((s / m) * 100), 
       type,
       whatWentWell,
       whatToImprove
@@ -88,7 +98,6 @@ const AssessmentRecords: React.FC = () => {
     setIsSaving(false);
     setIsModalOpen(false);
     resetForm();
-    alert(editingId ? "Assessment Updated & Logged Successfully!" : "Assessment Added & Logged Successfully!");
   };
 
   const handleEdit = (assessment: Assessment) => {
@@ -103,14 +112,32 @@ const AssessmentRecords: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const deleteAssessment = async (id: string) => {
-    if (confirm('Are you sure you want to delete this assessment?')) {
-        const updatedStudent = {
-            ...student,
-            assessments: student.assessments.filter(a => a.id !== id)
-        };
-        await updateStudent(updatedStudent);
-        await refreshStudent();
+  const deleteAssessment = async (assessment: Assessment) => {
+    if (confirm(`PERMANENT DELETE: This will remove "${assessment.title}" from the Spreadsheet Soul forever.`)) {
+        setIsDeleting(true);
+        try {
+            // 1. Delete from Cloud Spreadsheet (Hard Delete)
+            await deleteAssessmentFromCloud(student, assessment);
+            
+            // 2. Delete locally
+            const updatedStudent = {
+                ...student,
+                assessments: student.assessments.filter(a => a.id !== assessment.id)
+            };
+            await updateStudent(updatedStudent);
+            
+            // 3. Update profile on cloud (JSON sync)
+            if (isReadOnly) {
+                try { await syncStudentData(updatedStudent); } catch (err) { console.warn("Cloud profile sync failed."); }
+            }
+            
+            await refreshStudent();
+            alert("Record deleted.");
+        } catch (e) {
+            alert("Failed to delete from cloud. Check connection.");
+        } finally {
+            setIsDeleting(false);
+        }
     }
   };
 
@@ -125,40 +152,57 @@ const AssessmentRecords: React.FC = () => {
     setWhatToImprove('');
   };
 
-  const graphData = student.assessments.map(a => ({ name: a.title, percentage: a.percentage }));
+  const getDisplayPercentage = (val: number) => {
+      if (val === 0) return 0;
+      return Math.round(val);
+  };
+
+  const graphData = [...student.assessments]
+    .sort((a,b) => a.date.localeCompare(b.date))
+    .map(a => ({ name: a.title, percentage: getDisplayPercentage(a.percentage) }));
 
   return (
     <div className="space-y-8">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
             <h2 className="text-3xl font-bold text-gray-900 mb-2">Assessment Records & Reflections</h2>
-            <p className="text-lg text-gray-500">Track your grades, reflect on progress, and plan next steps.</p>
+            <p className="text-lg text-gray-500 font-medium">Tracking attainment for <span className="text-indigo-600 font-black">{student.name} ({student.id})</span></p>
         </div>
-        {!isReadOnly && (
-            <button 
-            onClick={() => { resetForm(); setIsModalOpen(true); }}
-            className={`flex items-center gap-2 ${buttonBg} text-white px-6 py-3 rounded-xl transition-colors shadow-md text-base font-bold`}
-            >
-            <Plus size={20} /> Add Assessment
-            </button>
-        )}
+        <div className="flex gap-2">
+            {!isReadOnly && (
+                <button 
+                  onClick={handleRestoreFromCloud}
+                  disabled={isRestoring}
+                  className="flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-100 px-6 py-3 rounded-xl transition-all shadow-sm text-base font-bold hover:bg-indigo-100"
+                >
+                  {isRestoring ? <Loader2 className="animate-spin" size={20}/> : <RefreshCw size={20} />} Deep Restore Logs
+                </button>
+            )}
+            {!isReadOnly && (
+                <button 
+                  onClick={() => { resetForm(); setIsModalOpen(true); }}
+                  className={`flex items-center gap-2 ${buttonBg} text-white px-6 py-3 rounded-xl transition-colors shadow-md text-base font-bold`}
+                >
+                  <Plus size={20} /> Add Assessment
+                </button>
+            )}
+        </div>
       </div>
 
-      {/* --- Data Recovery Alert for Empty States --- */}
       {!isReadOnly && student.assessments.length === 0 && (
           <div className="bg-amber-50 border-2 border-dashed border-amber-200 p-8 rounded-3xl text-center animate-fade-in">
               <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <RefreshCw size={32} />
+                  <ShieldCheck size={32} />
               </div>
-              <h3 className="text-xl font-bold text-amber-900 mb-2">Did your data disappear?</h3>
-              <p className="text-amber-700 max-w-lg mx-auto mb-6">If you have previously saved work to the cloud, you can restore it instantly using the button below.</p>
+              <h3 className="text-xl font-bold text-amber-900 mb-2">Soul Data Sync</h3>
+              <p className="text-amber-700 max-w-lg mx-auto mb-6">Your dashboard is blank. Click the button below to fetch all your historical assessment records from the Google Spreadsheet Soul.</p>
               <button 
                 onClick={handleRestoreFromCloud}
                 disabled={isRestoring}
                 className="bg-amber-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-amber-700 flex items-center justify-center gap-2 mx-auto transition-all transform active:scale-95 disabled:opacity-50"
               >
                 {isRestoring ? <Loader2 className="animate-spin" size={20}/> : <CloudDownload size={20}/>}
-                {isRestoring ? "Syncing with Cloud..." : "Restore My Data"}
+                {isRestoring ? "Reconstructing Records..." : "Sync from Spreadsheet Soul"}
               </button>
           </div>
       )}
@@ -180,12 +224,19 @@ const AssessmentRecords: React.FC = () => {
                     </LineChart>
                 </ResponsiveContainer>
             ) : (
-                <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50 border border-dashed rounded-xl font-bold italic">Start adding assessments to see your journey!</div>
+                <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50 border border-dashed rounded-xl font-bold italic">No data yet. Use 'Deep Restore' to fetch existing records.</div>
             )}
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden relative">
+        {isDeleting && (
+            <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center backdrop-blur-[1px]">
+                <div className="flex flex-col items-center gap-2 text-indigo-600 font-black uppercase text-xs tracking-widest animate-pulse">
+                    <Loader2 className="animate-spin" size={32}/> Hard Deleting Row from Soul...
+                </div>
+            </div>
+        )}
         <div className="overflow-x-auto">
             <table className="w-full text-left text-base text-gray-600">
                 <thead className="bg-gray-50 text-gray-700 uppercase text-sm font-bold">
@@ -197,7 +248,7 @@ const AssessmentRecords: React.FC = () => {
                         <th className="px-8 py-5">Percentage</th>
                         <th className="px-8 py-5 min-w-[240px]">My Reflection</th>
                         <th className="px-8 py-5 min-w-[240px]">Action Plan</th>
-                        {!isReadOnly && <th className="px-8 py-5 text-right">Action</th>}
+                        <th className="px-8 py-5 text-right">Action</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -207,17 +258,21 @@ const AssessmentRecords: React.FC = () => {
                             <td className="px-8 py-5 font-bold text-gray-900">{a.title}</td>
                             <td className="px-8 py-5">{a.type}</td>
                             <td className="px-8 py-5">{a.score}/{a.maxScore}</td>
-                            <td className={`px-8 py-5 font-bold ${percentageColor}`}>{a.percentage}%</td>
+                            <td className={`px-8 py-5 font-black text-lg ${percentageColor}`}>
+                                {getDisplayPercentage(a.percentage)}%
+                            </td>
                             <td className="px-8 py-5 italic text-sm">{a.whatWentWell || '-'}</td>
                             <td className="px-8 py-5 italic text-sm">{a.whatToImprove || '-'}</td>
-                            {!isReadOnly && (
-                                <td className="px-8 py-5 text-right flex justify-end gap-2">
-                                    <button onClick={() => handleEdit(a)} className="text-blue-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-full"><Edit size={18} /></button>
-                                    <button onClick={() => deleteAssessment(a.id)} className="text-red-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-full"><Trash2 size={18} /></button>
-                                </td>
-                            )}
+                            <td className="px-8 py-5 text-right flex justify-end gap-2">
+                                {!isReadOnly && (
+                                    <button onClick={() => handleEdit(a)} className="text-blue-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-full transition-colors"><Edit size={18} /></button>
+                                )}
+                                <button onClick={() => deleteAssessment(a)} className="text-red-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={18} /></button>
+                            </td>
                         </tr>
-                    )) : <tr><td colSpan={8} className="px-8 py-12 text-center text-gray-400 font-medium">No assessments recorded locally. Click 'Add Assessment' or 'Restore My Data'.</td></tr>}
+                    )) : <tr><td colSpan={8} className="px-8 py-12 text-center text-gray-400 font-medium">
+                        No active assessments recorded locally. Click 'Deep Restore Logs' to sync from the cloud spreadsheet.
+                    </td></tr>}
                 </tbody>
             </table>
         </div>

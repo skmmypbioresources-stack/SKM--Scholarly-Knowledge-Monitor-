@@ -3,17 +3,20 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Student, Curriculum, TuitionTask, Resource, ChatMessage, TuitionReflection, StudentWork } from '../types';
 import { updateStudent, checkAndIncrementAiUsage } from '../services/storageService';
+import { syncStudentData, getStudentSyncData } from '../services/cloudService';
 import { createTaskTutorSession, sendMessageToGemini } from '../services/geminiService';
 import { Chat } from '@google/genai';
 import { 
   CalendarDays, BrainCircuit, FileText, Plus, CheckCircle2, Clock, XCircle, ChevronLeft, ChevronRight,
   Loader2, Send, Bot, User, Lightbulb, BookOpenCheck, Zap, Trash2, Link as LinkIcon, ExternalLink,
-  Upload, ListChecks, MessageSquareText
+  Upload, ListChecks, MessageSquareText, History, RefreshCw
 } from 'lucide-react';
 
 const Tuition: React.FC = () => {
   const { student, refreshStudent, isReadOnly } = useOutletContext<{ student: Student, refreshStudent: () => Promise<void>, isReadOnly: boolean }>();
   const [activeStep, setActiveStep] = useState<number>(1);
+  const [showHistory, setShowHistory] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const isIGCSE = student.curriculum === Curriculum.IGCSE;
 
   // --- THEME ---
@@ -22,12 +25,49 @@ const Tuition: React.FC = () => {
   const activeStepClass = isIGCSE ? 'bg-blue-600 text-white shadow-lg' : 'bg-green-600 text-white shadow-lg';
   const ringFocus = isIGCSE ? 'focus:ring-blue-500' : 'focus:ring-green-500';
 
+  // --- DATA INTEGRITY HELPER ---
+  // This ensures we always pull the freshest cloud data before saving,
+  // preventing the "overwriting assessments" issue.
+  const getMergedStudent = async (updates: Partial<Student>): Promise<Student> => {
+      try {
+          const cloudRes = await getStudentSyncData(student.batch, student.id);
+          const baseStudent = (cloudRes.result === 'success' && cloudRes.data) ? cloudRes.data : student;
+          
+          // Merge logic: Prioritize cloud version for assessments/grades to prevent loss,
+          // but apply the new tuition updates.
+          return {
+              ...baseStudent,
+              ...updates,
+              // Explicitly preserve these if they exist in the fresher cloud version
+              assessments: baseStudent.assessments.length >= student.assessments.length ? baseStudent.assessments : student.assessments,
+              termAssessments: baseStudent.termAssessments.length >= student.termAssessments.length ? baseStudent.termAssessments : student.termAssessments
+          };
+      } catch (e) {
+          return { ...student, ...updates };
+      }
+  };
+
+  // Auto-sync on mount to catch tasks assigned by teacher
+  useEffect(() => {
+      const initSync = async () => {
+          setIsSyncing(true);
+          const cloudRes = await getStudentSyncData(student.batch, student.id);
+          if (cloudRes.result === 'success' && cloudRes.data) {
+              await updateStudent(cloudRes.data);
+              await refreshStudent();
+          }
+          setIsSyncing(false);
+      };
+      initSync();
+  }, [student.id, student.batch]);
+
   // Step 1: Attendance Logic
   const todayStr = new Date().toISOString().split('T')[0];
   const todayAttendance = student.attendance?.find(a => a.date === todayStr);
 
   const markAttendance = async (status: 'present' | 'absent' | 'late') => {
       if (isReadOnly) return;
+      setIsSyncing(true);
       let updatedAttendance = [...(student.attendance || [])];
       const existingIndex = updatedAttendance.findIndex(a => a.date === todayStr);
       if (existingIndex >= 0) {
@@ -35,8 +75,12 @@ const Tuition: React.FC = () => {
       } else {
           updatedAttendance.push({ date: todayStr, status });
       }
-      await updateStudent({ ...student, attendance: updatedAttendance });
+      
+      const updatedStudent = await getMergedStudent({ attendance: updatedAttendance });
+      await updateStudent(updatedStudent);
+      await syncStudentData(updatedStudent);
       await refreshStudent();
+      setIsSyncing(false);
   };
 
   // Step 2: Work Submission Logic
@@ -55,8 +99,11 @@ const Tuition: React.FC = () => {
           url: workUrl.startsWith('http') ? workUrl : `https://${workUrl}`,
           date: todayStr
       };
+      
       const currentWork = student.tuitionWork || [];
-      await updateStudent({ ...student, tuitionWork: [newWork, ...currentWork] });
+      const updatedStudent = await getMergedStudent({ tuitionWork: [newWork, ...currentWork] });
+      await updateStudent(updatedStudent);
+      await syncStudentData(updatedStudent);
       await refreshStudent();
       setWorkTitle('');
       setWorkUrl('');
@@ -66,9 +113,13 @@ const Tuition: React.FC = () => {
   const handleDeleteWork = async (id: string) => {
       if (isReadOnly) return;
       if (!confirm("Remove this link?")) return;
+      setIsSyncing(true);
       const updatedWork = (student.tuitionWork || []).filter(w => w.id !== id);
-      await updateStudent({ ...student, tuitionWork: updatedWork });
+      const updatedStudent = await getMergedStudent({ tuitionWork: updatedWork });
+      await updateStudent(updatedStudent);
+      await syncStudentData(updatedStudent);
       await refreshStudent();
+      setIsSyncing(false);
   };
 
   // Step 3: AI Tasks Logic
@@ -87,7 +138,8 @@ const Tuition: React.FC = () => {
 
   const handleCreateTask = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!isReadOnly) return; // Only Admin (ReadOnly mode in this context) can add tasks
+      if (!isReadOnly) return; 
+      setIsSyncing(true);
       const task: TuitionTask = { 
           id: Date.now().toString(), 
           title: newTaskTitle, 
@@ -97,11 +149,25 @@ const Tuition: React.FC = () => {
           aiContextPrompt: newTaskPrompt, 
           chatHistory: [] 
       };
-      const currentTasks = student.tuitionTasks || [];
-      await updateStudent({ ...student, tuitionTasks: [...currentTasks, task] });
+      
+      // CRITICAL: Fetch current student state from cloud so teacher doesn't overwrite student's assessments
+      const updatedStudent = await getMergedStudent({ 
+          tuitionTasks: [...(student.tuitionTasks || []), task] 
+      });
+      
+      await updateStudent(updatedStudent);
+      const syncRes = await syncStudentData(updatedStudent); 
+      
+      if (syncRes.result === 'success') {
+          alert("Task published and synced to student dashboard.");
+      } else {
+          alert("Saved locally but cloud sync failed. Ensure your teacher link is correct.");
+      }
+
       await refreshStudent();
       setIsTeacherAddingTask(false);
       setNewTaskTitle(''); setNewTaskDesc(''); setNewTaskPrompt('');
+      setIsSyncing(false);
   };
 
   useEffect(() => {
@@ -122,7 +188,11 @@ const Tuition: React.FC = () => {
       const updatedTask = { ...activeTask, chatHistory: msgs };
       setActiveTask(updatedTask);
       const updatedTasks = student.tuitionTasks.map(t => t.id === activeTask.id ? updatedTask : t);
-      await updateStudent({ ...student, tuitionTasks: updatedTasks });
+      // For chat, we don't necessarily need a full fetch-merge every message, 
+      // but we use current state to keep it responsive.
+      const updatedStudent = { ...student, tuitionTasks: updatedTasks };
+      await updateStudent(updatedStudent);
+      await syncStudentData(updatedStudent);
   };
 
   const handleSendMessage = async () => {
@@ -157,12 +227,21 @@ const Tuition: React.FC = () => {
       e.preventDefault();
       if (isReadOnly) return;
       if (!refTopic || !refUnderstood) return;
+      setIsSyncing(true);
       const newRef: TuitionReflection = { id: Date.now().toString(), date: reflectionDate, topicDiscussed: refTopic, understood: refUnderstood, questions: refQuestions };
-      const currentRefs = student.tuitionReflections || [];
-      await updateStudent({ ...student, tuitionReflections: [newRef, ...currentRefs] });
+      
+      const updatedStudent = await getMergedStudent({ 
+          tuitionReflections: [newRef, ...(student.tuitionReflections || [])] 
+      });
+      
+      await updateStudent(updatedStudent);
+      await syncStudentData(updatedStudent);
       await refreshStudent();
+      
       setRefTopic(''); setRefUnderstood(''); setRefQuestions('');
       setIsAddingReflection(false);
+      setIsSyncing(false);
+      alert("Reflection log saved and synced!");
   };
 
   return (
@@ -172,9 +251,16 @@ const Tuition: React.FC = () => {
               <h2 className="text-3xl font-black text-gray-900 mb-2">Tuition Lesson Workflow</h2>
               <p className="text-lg text-gray-500 font-medium">Complete your daily tuition journey in order.</p>
           </div>
-          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-2xl border border-gray-200 shadow-sm">
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Active Batch:</span>
-              <span className={`font-black text-sm ${themeColor}`}>{student.batch.toUpperCase()}</span>
+          <div className="flex items-center gap-3">
+              {isSyncing && (
+                  <div className="flex items-center gap-2 text-indigo-500 font-bold text-xs animate-pulse">
+                      <RefreshCw size={14} className="animate-spin"/> SYNCING...
+                  </div>
+              )}
+              <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-2xl border border-gray-200 shadow-sm">
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Active Batch:</span>
+                  <span className={`font-black text-sm ${themeColor}`}>{student.batch.toUpperCase()}</span>
+              </div>
           </div>
       </div>
 
@@ -208,50 +294,114 @@ const Tuition: React.FC = () => {
 
       {/* Step 1: Attendance */}
       {activeStep === 1 && (
-          <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-gray-100 animate-fade-in text-center">
-              <div className="max-w-md mx-auto">
-                  <div className={`w-20 h-20 rounded-3xl ${isIGCSE ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'} flex items-center justify-center mx-auto mb-6 shadow-inner`}>
-                      <CalendarDays size={40} />
-                  </div>
-                  <h3 className="text-2xl font-black text-gray-900 mb-2">Daily Attendance</h3>
-                  <p className="text-gray-500 mb-8 font-medium">Mark your status for today's lesson ({new Date().toLocaleDateString()}).</p>
-                  
-                  {isReadOnly ? (
-                      <div className="p-6 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
-                          <p className="font-bold text-gray-400">Viewing Student Attendance Record</p>
-                          {todayAttendance ? (
-                              <div className={`mt-4 py-3 rounded-xl font-black uppercase tracking-widest ${
-                                  todayAttendance.status === 'present' ? 'bg-green-100 text-green-700' : 
-                                  todayAttendance.status === 'late' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
-                              }`}>
-                                  {todayAttendance.status}
-                              </div>
-                          ) : <p className="mt-2 text-sm text-gray-400">No record for today.</p>}
-                      </div>
-                  ) : (
-                      <div className="flex gap-4">
-                          <button 
-                            onClick={() => markAttendance('present')}
-                            className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'present' ? 'bg-green-600 border-green-600 text-white shadow-lg' : 'bg-white border-green-100 text-green-600 hover:bg-green-50'}`}
-                          >
-                              PRESENT
-                          </button>
-                          <button 
-                            onClick={() => markAttendance('late')}
-                            className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'late' ? 'bg-amber-500 border-amber-500 text-white shadow-lg' : 'bg-white border-amber-100 text-amber-600 hover:bg-amber-50'}`}
-                          >
-                              LATE
-                          </button>
-                          <button 
-                            onClick={() => markAttendance('absent')}
-                            className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'absent' ? 'bg-red-500 border-red-500 text-white shadow-lg' : 'bg-white border-red-100 text-red-600 hover:bg-red-50'}`}
-                          >
-                              ABSENT
-                          </button>
-                      </div>
-                  )}
-                  {!isReadOnly && <p className="mt-6 text-xs text-gray-400 font-bold uppercase tracking-widest italic">Click to toggle your status</p>}
-              </div>
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-gray-100 animate-fade-in">
+              {!showHistory ? (
+                <div className="max-w-md mx-auto text-center">
+                    <div className={`w-20 h-20 rounded-3xl ${isIGCSE ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'} flex items-center justify-center mx-auto mb-6 shadow-inner`}>
+                        <CalendarDays size={40} />
+                    </div>
+                    <h3 className="text-2xl font-black text-gray-900 mb-2">Daily Attendance</h3>
+                    <p className="text-gray-500 mb-8 font-medium">Mark your status for today's lesson ({new Date().toLocaleDateString()}).</p>
+                    
+                    {isReadOnly ? (
+                        <div className="p-6 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                            <p className="font-bold text-gray-400">Viewing Student Attendance Record</p>
+                            {todayAttendance ? (
+                                <div className={`mt-4 py-3 rounded-xl font-black uppercase tracking-widest ${
+                                    todayAttendance.status === 'present' ? 'bg-green-100 text-green-700' : 
+                                    todayAttendance.status === 'late' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                                }`}>
+                                    {todayAttendance.status}
+                                </div>
+                            ) : <p className="mt-2 text-sm text-gray-400">No record for today.</p>}
+                        </div>
+                    ) : (
+                        <div className="flex gap-4">
+                            <button 
+                              onClick={() => markAttendance('present')}
+                              className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'present' ? 'bg-green-600 border-green-600 text-white shadow-lg' : 'bg-white border-green-100 text-green-600 hover:bg-green-50'}`}
+                            >
+                                PRESENT
+                            </button>
+                            <button 
+                              onClick={() => markAttendance('late')}
+                              className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'late' ? 'bg-amber-500 border-amber-500 text-white shadow-lg' : 'bg-white border-amber-100 text-amber-600 hover:bg-amber-50'}`}
+                            >
+                                LATE
+                            </button>
+                            <button 
+                              onClick={() => markAttendance('absent')}
+                              className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${todayAttendance?.status === 'absent' ? 'bg-red-500 border-red-500 text-white shadow-lg' : 'bg-white border-red-100 text-red-600 hover:bg-red-50'}`}
+                            >
+                                ABSENT
+                            </button>
+                        </div>
+                    )}
+                    {!isReadOnly && <p className="mt-6 text-xs text-gray-400 font-bold uppercase tracking-widest italic">Click to toggle your status</p>}
+                    
+                    <button 
+                        onClick={() => setShowHistory(true)}
+                        className="mt-10 flex items-center justify-center gap-2 mx-auto text-gray-400 hover:text-indigo-600 font-bold text-xs uppercase tracking-[0.2em] transition-colors"
+                    >
+                        <History size={16}/> View Attendance History
+                    </button>
+                </div>
+              ) : (
+                <div className="max-w-2xl mx-auto animate-fade-in">
+                    <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-100">
+                        <div className="flex items-center gap-3">
+                            <History size={24} className={themeColor}/>
+                            <h3 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Attendance History</h3>
+                        </div>
+                        <button 
+                            onClick={() => setShowHistory(false)}
+                            className="bg-gray-100 text-gray-500 px-4 py-2 rounded-xl font-bold text-xs hover:bg-gray-200 transition-colors uppercase tracking-widest"
+                        >
+                            Back to Today
+                        </button>
+                    </div>
+
+                    <div className="bg-slate-50/50 rounded-[2rem] border border-gray-100 overflow-hidden shadow-inner">
+                        <table className="w-full text-left">
+                            <thead className="bg-white border-b border-gray-100">
+                                <tr>
+                                    <th className="px-8 py-5 text-[10px] font-black uppercase text-gray-400 tracking-widest">Session Date</th>
+                                    <th className="px-8 py-5 text-[10px] font-black uppercase text-gray-400 tracking-widest">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {(student.attendance || []).length > 0 ? (
+                                    [...(student.attendance || [])].sort((a,b) => b.date.localeCompare(a.date)).map((record, idx) => (
+                                        <tr key={idx} className="bg-white/50 hover:bg-white transition-colors">
+                                            <td className="px-8 py-5 font-bold text-gray-700">
+                                                {new Date(record.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                            </td>
+                                            <td className="px-8 py-5">
+                                                <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full font-black text-[10px] uppercase tracking-widest ${
+                                                    record.status === 'present' ? 'bg-green-100 text-green-700' :
+                                                    record.status === 'late' ? 'bg-amber-100 text-amber-700' :
+                                                    'bg-red-100 text-red-700'
+                                                }`}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${
+                                                        record.status === 'present' ? 'bg-green-600' :
+                                                        record.status === 'late' ? 'bg-amber-600' :
+                                                        'bg-red-600'
+                                                    }`}></span>
+                                                    {record.status}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))
+                                ) : (
+                                    <tr>
+                                        <td colSpan={2} className="px-8 py-12 text-center text-gray-400 italic">No attendance records found.</td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+              )}
           </div>
       )}
 
@@ -359,7 +509,9 @@ const Tuition: React.FC = () => {
                                       <textarea value={newTaskPrompt} onChange={e => setNewTaskPrompt(e.target.value)} placeholder="Tell the AI what correct answers look like or what steps to guide the student through..." className="w-full p-4 rounded-2xl border-0 shadow-inner bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium h-24 resize-none" />
                                   </div>
                                   <div className="flex justify-end pt-2">
-                                      <button type="submit" className={`px-10 py-4 rounded-2xl font-black text-white shadow-xl transition-all hover:scale-105 ${themeBg}`}>PUBLISH TASK TO STUDENT</button>
+                                      <button type="submit" disabled={isSyncing} className={`px-10 py-4 rounded-2xl font-black text-white shadow-xl transition-all hover:scale-105 ${themeBg} flex items-center gap-2`}>
+                                          {isSyncing ? <Loader2 className="animate-spin" size={20}/> : 'PUBLISH TASK TO STUDENT'}
+                                      </button>
                                   </div>
                               </div>
                           </form>
@@ -531,7 +683,9 @@ const Tuition: React.FC = () => {
                               <textarea value={refQuestions} onChange={e => setRefQuestions(e.target.value)} placeholder="What questions would you like to ask in the next lesson?" className={`w-full border-2 border-gray-50 rounded-2xl px-5 py-4 h-28 resize-none outline-none focus:ring-4 ${ringFocus} focus:ring-opacity-50 transition-all bg-slate-50 font-medium`} />
                           </div>
                           <div className="flex justify-end pt-2">
-                              <button type="submit" className={`px-12 py-4 rounded-2xl font-black text-xl text-white shadow-2xl hover:scale-105 transition-transform ${themeBg}`}>PERMANENTLY SAVE LOG</button>
+                              <button type="submit" disabled={isSyncing} className={`px-12 py-4 rounded-2xl font-black text-xl text-white shadow-2xl hover:scale-105 transition-transform ${themeBg} flex items-center gap-2`}>
+                                  {isSyncing ? <Loader2 className="animate-spin" size={24}/> : 'PERMANENTLY SAVE LOG'}
+                              </button>
                           </div>
                       </form>
                   </div>

@@ -162,6 +162,18 @@ export const logAssessmentRecord = async (student: Student, assessment: Assessme
     });
 };
 
+export const deleteAssessmentFromCloud = async (student: Student, assessment: Assessment) => {
+    return await sendToCloud({
+        action: 'delete_row',
+        sheetName: 'AssessmentReflections',
+        studentId: student.id,
+        matchParams: {
+            Date: assessment.date,
+            Title: assessment.title
+        }
+    });
+};
+
 export const logTermExam = async (student: Student, exam: TermAssessment) => {
     await sendToCloud({ 
         action: 'log_reflection', 
@@ -177,6 +189,18 @@ export const logTermExam = async (student: Student, exam: TermAssessment) => {
             Reflection: exam.whatWentWell, 
             ActionPlan: exam.actionPlan 
         } 
+    });
+};
+
+export const deleteTermExamFromCloud = async (student: Student, exam: TermAssessment) => {
+    return await sendToCloud({
+        action: 'delete_row',
+        sheetName: 'TermExamReflections',
+        studentId: student.id,
+        matchParams: {
+            Date: exam.date,
+            ExamType: exam.examType
+        }
     });
 };
 

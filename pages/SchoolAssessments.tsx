@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Student, TermAssessment, Curriculum, DEFAULT_TERM_EXAMS } from '../types';
 import { updateStudent } from '../services/storageService';
-import { logTermExam } from '../services/cloudService';
+import { logTermExam, deleteTermExamFromCloud, syncStudentData } from '../services/cloudService';
 import { Plus, Trash2, Edit, BarChart2, TrendingUp, ClipboardList, Loader2, AlertTriangle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, LabelList } from 'recharts';
 
@@ -11,10 +11,11 @@ const SchoolAssessments: React.FC = () => {
   const { student, refreshStudent, isReadOnly } = useOutletContext<{ student: Student, refreshStudent: () => Promise<void>, isReadOnly: boolean }>();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Custom Delete Modal State
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TermAssessment | null>(null);
 
   const [selectedExamType, setSelectedExamType] = useState<string>(DEFAULT_TERM_EXAMS[0]);
   const [isCustomExam, setIsCustomExam] = useState(false);
@@ -85,12 +86,33 @@ const SchoolAssessments: React.FC = () => {
   };
 
   const confirmDelete = async () => {
-    if (!deleteId) return;
+    if (!deleteTarget) return;
     
-    const updatedStudent = { ...student, termAssessments: student.termAssessments.filter(a => a.id !== deleteId) };
-    await updateStudent(updatedStudent);
-    await refreshStudent();
-    setDeleteId(null); // Close modal
+    setIsDeleting(true);
+    try {
+        // 1. Hard Delete from Cloud
+        await deleteTermExamFromCloud(student, deleteTarget);
+        
+        // 2. Delete locally
+        const updatedStudent = { 
+            ...student, 
+            termAssessments: student.termAssessments.filter(a => a.id !== deleteTarget.id) 
+        };
+        await updateStudent(updatedStudent);
+        
+        // 3. Cloud profile JSON sync
+        if (isReadOnly) {
+            try { await syncStudentData(updatedStudent); } catch (err) { console.warn("Cloud sync failed."); }
+        }
+        
+        await refreshStudent();
+        alert("Exam record deleted from app and spreadsheet.");
+    } catch (e) {
+        alert("Failed to delete from cloud. Check connection.");
+    } finally {
+        setIsDeleting(false);
+        setDeleteTarget(null);
+    }
   };
 
   const resetForm = () => {
@@ -137,7 +159,14 @@ const SchoolAssessments: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid gap-8">
+      <div className="grid gap-8 relative">
+        {isDeleting && (
+            <div className="absolute inset-0 bg-white/40 z-10 flex items-center justify-center backdrop-blur-[1px]">
+                 <div className="flex flex-col items-center gap-2 text-indigo-600 font-black uppercase text-xs tracking-widest animate-pulse">
+                    <Loader2 className="animate-spin" size={32}/> Removing from Soul...
+                </div>
+            </div>
+        )}
         {(student.termAssessments || []).map((a) => (
           <div key={a.id} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
             <div className="flex justify-between items-center border-b pb-4 mb-4">
@@ -147,7 +176,7 @@ const SchoolAssessments: React.FC = () => {
                     {!isReadOnly && (
                       <>
                         <button onClick={() => handleEdit(a)}><Edit size={20} className="text-blue-400 hover:text-blue-600"/></button>
-                        <button onClick={() => setDeleteId(a.id)}><Trash2 size={20} className="text-red-400 hover:text-red-600"/></button>
+                        <button onClick={() => setDeleteTarget(a)}><Trash2 size={20} className="text-red-400 hover:text-red-600"/></button>
                       </>
                     )}
                 </div>
@@ -190,18 +219,18 @@ const SchoolAssessments: React.FC = () => {
         </div>
       )}
 
-      {/* DELETE CONFIRMATION MODAL - replaces browser confirm() */}
-      {deleteId && (
+      {/* DELETE CONFIRMATION MODAL */}
+      {deleteTarget && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl animate-fade-in">
              <div className="flex items-center gap-3 text-red-600 mb-4">
                 <AlertTriangle size={24} />
                 <h3 className="text-xl font-bold">Confirm Deletion</h3>
              </div>
-             <p className="text-gray-600 mb-6">Are you sure you want to delete this exam record? This action cannot be undone.</p>
+             <p className="text-gray-600 mb-6">Are you sure you want to PERMANENTLY delete "{deleteTarget.examType}"? This will also remove it from the Spreadsheet Soul.</p>
              <div className="flex justify-end gap-3">
                 <button 
-                  onClick={() => setDeleteId(null)} 
+                  onClick={() => setDeleteTarget(null)} 
                   className="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded-lg font-bold"
                 >
                   Cancel
