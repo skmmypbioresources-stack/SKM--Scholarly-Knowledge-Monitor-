@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Student, Curriculum } from '../types';
@@ -82,7 +83,7 @@ const Summative: React.FC = () => {
     <div className="space-y-8">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">🔮 Future Grade Forecast</h2>
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">🔮 Grade Predictor</h2>
             <p className="text-lg text-gray-500">Your academic crystal ball. See where you are heading and smash those targets!</p>
         </div>
         

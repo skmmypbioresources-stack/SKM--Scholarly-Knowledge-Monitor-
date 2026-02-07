@@ -1,5 +1,5 @@
 
-import { Student, Assessment, TermAssessment, BatchResource, AssessmentTask, SyllabusPortion, ChallengeImage } from '../types';
+import { Student, Assessment, TermAssessment, BatchResource, AssessmentTask, SyllabusPortion, ChallengeImage, PeerMarkingTask } from '../types';
 import { getSetting, exportData, importData } from './db';
 
 declare var google: any;
@@ -16,7 +16,6 @@ const getFolderName = async (): Promise<string> => {
 };
 
 const sendToCloud = async (payload: any) => {
-    // Force retrieval of URL every time to ensure sync consistency
     const savedUrl = await getScriptUrl();
     const finalUrl = payload.urlOverride || savedUrl;
     
@@ -32,7 +31,7 @@ const sendToCloud = async (payload: any) => {
         });
     }
 
-    if (!finalUrl) return { result: 'error', error: 'Automation URL not found. Please paste your Script URL in Admin Settings.' };
+    if (!finalUrl) return { result: 'error', error: 'Automation URL not found.' };
 
     try {
         payload.secret = CLOUD_SECRET;
@@ -99,6 +98,17 @@ export const syncChallengeLibrary = async (images: ChallengeImage[]) => {
 export const getChallengeLibraryFromCloud = async () => {
     const folderName = await getFolderName();
     return await sendToCloud({ action: 'get_challenge_library', folderName });
+};
+
+// Added Peer Marking cloud sync
+export const syncPeerMarkingTasks = async (batchId: string, tasks: PeerMarkingTask[]) => {
+    const folderName = await getFolderName();
+    return await sendToCloud({ action: 'sync_peer_marking', folderName, batchId, data: tasks });
+};
+
+export const getPeerMarkingFromCloud = async (batchId: string) => {
+    const folderName = await getFolderName();
+    return await sendToCloud({ action: 'get_peer_marking', folderName, batchId });
 };
 
 export const syncStudentData = async (student: Student) => {

@@ -1,8 +1,9 @@
 
-import { Student, Topic, Assessment, Resource, BatchResource, ChallengeImage, AssessmentTask, SyllabusPortion } from '../types';
+import { Student, Topic, Assessment, Resource, BatchResource, ChallengeImage, AssessmentTask, SyllabusPortion, PeerMarkingTask } from '../types';
 
 const DB_NAME = 'SKM_Persistent_DB_v1';
-const DB_VERSION = 35; 
+// Incremented version to 37 to add peer_marking store
+const DB_VERSION = 37; 
 const STORE_STUDENTS = 'students';
 const STORE_FILES = 'files';
 const STORE_SETTINGS = 'settings';
@@ -10,6 +11,7 @@ const STORE_BATCH_RESOURCES = 'batch_resources';
 const STORE_CHALLENGE_IMAGES = 'challenge_images';
 const STORE_ASSESSMENT_TASKS = 'assessment_tasks'; 
 const STORE_SYLLABUS_PORTIONS = 'syllabus_portions'; 
+const STORE_PEER_MARKING = 'peer_marking';
 
 // Mock Data Imports
 import { INITIAL_TOPICS_IGCSE, INITIAL_TOPICS_MYP, MOCK_STUDENTS } from './mockData';
@@ -47,6 +49,10 @@ const openDB = (): Promise<IDBDatabase> => {
       }
       if (!db.objectStoreNames.contains(STORE_SYLLABUS_PORTIONS)) {
           db.createObjectStore(STORE_SYLLABUS_PORTIONS, { keyPath: 'id' });
+      }
+      // Added Peer Marking store in migration
+      if (!db.objectStoreNames.contains(STORE_PEER_MARKING)) {
+          db.createObjectStore(STORE_PEER_MARKING, { keyPath: 'id' });
       }
     };
   });
@@ -159,6 +165,18 @@ export const getSyllabusPortions = async (batchId: string): Promise<SyllabusPort
 };
 export const deleteSyllabusPortion = async (id: string) => deleteStoreItem(STORE_SYLLABUS_PORTIONS, id);
 
+// Added Peer Marking DB handlers
+export const getPeerMarkingTasks = async (batchId: string): Promise<PeerMarkingTask[]> => {
+    const all = await getStoreData<PeerMarkingTask>(STORE_PEER_MARKING);
+    return all.filter(t => t.batchId === batchId);
+};
+export const savePeerMarkingTask = async (t: PeerMarkingTask) => saveStoreItem(STORE_PEER_MARKING, t);
+export const savePeerMarkingTasksList = async (tasks: PeerMarkingTask[]) => {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PEER_MARKING, 'readwrite');
+    tasks.forEach(t => tx.objectStore(STORE_PEER_MARKING).put(t));
+};
+
 export const saveFile = async (file: File): Promise<string> => {
   const db = await openDB();
   const id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
@@ -222,7 +240,7 @@ export const updateLastBackupTime = async (): Promise<void> => {
 export const clearDatabase = async (): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const stores = [STORE_STUDENTS, STORE_FILES, STORE_BATCH_RESOURCES, STORE_CHALLENGE_IMAGES, STORE_ASSESSMENT_TASKS, STORE_SYLLABUS_PORTIONS];
+        const stores = [STORE_STUDENTS, STORE_FILES, STORE_BATCH_RESOURCES, STORE_CHALLENGE_IMAGES, STORE_ASSESSMENT_TASKS, STORE_SYLLABUS_PORTIONS, STORE_PEER_MARKING];
         const transaction = db.transaction(stores, 'readwrite');
         stores.forEach(s => transaction.objectStore(s).clear());
         transaction.oncomplete = () => resolve();
@@ -235,6 +253,7 @@ export const exportData = async (): Promise<string> => {
     const batchRes = await getStoreData(STORE_BATCH_RESOURCES);
     const tasks = await getStoreData(STORE_ASSESSMENT_TASKS);
     const portions = await getStoreData(STORE_SYLLABUS_PORTIONS);
+    const peerMarking = await getStoreData(STORE_PEER_MARKING);
 
     return JSON.stringify({
         version: DB_VERSION,
@@ -242,14 +261,15 @@ export const exportData = async (): Promise<string> => {
         students,
         batch_resources: batchRes,
         assessment_tasks: tasks,
-        syllabus_portions: portions
+        syllabus_portions: portions,
+        peer_marking: peerMarking
     }, null, 2);
 };
 
 export const importData = async (jsonString: string): Promise<void> => {
     const data = JSON.parse(jsonString);
     const db = await openDB();
-    const stores = [STORE_STUDENTS, STORE_BATCH_RESOURCES, STORE_ASSESSMENT_TASKS, STORE_SYLLABUS_PORTIONS];
+    const stores = [STORE_STUDENTS, STORE_BATCH_RESOURCES, STORE_ASSESSMENT_TASKS, STORE_SYLLABUS_PORTIONS, STORE_PEER_MARKING];
     const transaction = db.transaction(stores, 'readwrite');
     
     stores.forEach(s => transaction.objectStore(s).clear());
@@ -258,6 +278,7 @@ export const importData = async (jsonString: string): Promise<void> => {
     if (data.batch_resources) data.batch_resources.forEach((r: any) => transaction.objectStore(STORE_BATCH_RESOURCES).add(r));
     if (data.assessment_tasks) data.assessment_tasks.forEach((t: any) => transaction.objectStore(STORE_ASSESSMENT_TASKS).add(t));
     if (data.syllabus_portions) data.syllabus_portions.forEach((p: any) => transaction.objectStore(STORE_SYLLABUS_PORTIONS).add(p));
+    if (data.peer_marking) data.peer_marking.forEach((p: any) => transaction.objectStore(STORE_PEER_MARKING).add(p));
     
     return new Promise((resolve, reject) => {
         transaction.oncomplete = () => resolve();

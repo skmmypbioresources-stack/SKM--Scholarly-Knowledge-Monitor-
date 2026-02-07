@@ -9,7 +9,7 @@ import AssessmentRecords from './pages/AssessmentRecords';
 import SchoolAssessments from './pages/SchoolAssessments';
 import SyllabusLibrary from './pages/SyllabusLibrary'; 
 import AssessmentTasks from './pages/AssessmentTasks'; 
-import BatchAssessmentTasks from './pages/BatchAssessmentTasks'; 
+import BatchAssessmentTasks from './pages/BatchAssessmentTasks';
 import Summative from './pages/Summative';
 import Communication from './pages/Communication';
 import Tuition from './pages/Tuition';
@@ -19,6 +19,7 @@ import Login from './pages/Login';
 import Layout from './components/Layout';
 import ChallengeLibrary from './pages/ChallengeLibrary';
 import StudentEntryGate from './pages/StudentEntryGate';
+import PeerMarking from './pages/PeerMarking';
 
 // EMPOWERMENT
 import BioPuzzle from './pages/BioPuzzle';
@@ -27,10 +28,9 @@ import TypingTutor from './pages/TypingTutor';
 import VocabBuilder from './pages/VocabBuilder';
 import GrowthScore from './pages/GrowthScore'; 
 
-import { getStudentById, initDB } from './services/storageService';
+import { getStudentById, initDB, updateStudent } from './services/storageService';
 import { getCurrentSession, isAuthorized } from './services/auth';
 import { getStudentSyncData } from './services/cloudService';
-import { updateStudent } from './services/storageService';
 import { Student } from './types';
 import { Loader2, RefreshCw } from 'lucide-react';
 
@@ -72,18 +72,15 @@ const StudentRouteWrapper: React.FC = () => {
                 const currentData = await refreshStudent();
                 
                 // --- SELF-HEALING / DATA RECOVERY LOGIC ---
-                // If local data is empty, attempt an auto-restore from Cloud
                 if (currentData && !isAdmin) {
                     const hasLocalData = currentData.assessments.length > 0 || currentData.termAssessments.length > 0;
                     if (!hasLocalData) {
-                        console.log("Empty local state detected. Attempting auto-recovery...");
                         setIsRecovering(true);
                         try {
                             const cloudRes = await getStudentSyncData(currentData.batch, currentData.id);
                             if (cloudRes.result === 'success' && cloudRes.data) {
                                 await updateStudent(cloudRes.data);
                                 await refreshStudent();
-                                console.log("Data recovered successfully.");
                             }
                         } catch (e) {
                             console.error("Auto-recovery failed", e);
@@ -106,7 +103,6 @@ const StudentRouteWrapper: React.FC = () => {
   if (!authorized) return <Navigate to="/login" replace />;
   if (!student) return <div className="h-screen flex items-center justify-center">Student not found.</div>;
 
-  // BYPASS FOR ADMIN: Admin enters instantly to verify reflection.
   if (isLocked && !isAdmin) {
       return (
         <StudentEntryGate 
@@ -159,6 +155,7 @@ const App: React.FC = () => {
           <Route path="records" element={<AssessmentRecords />} />
           <Route path="school-exams" element={<SchoolAssessments />} />
           <Route path="assessment-tasks" element={<AssessmentTasks />} />
+          <Route path="peer-marking" element={<PeerMarking />} />
           <Route path="syllabus-library" element={<SyllabusLibrary />} />
           <Route path="tuition" element={<Tuition />} />
           <Route path="summative" element={<Summative />} />

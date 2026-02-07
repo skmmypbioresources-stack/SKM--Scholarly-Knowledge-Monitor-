@@ -36,25 +36,26 @@ const AssessmentRecords: React.FC = () => {
   const handleRestoreFromCloud = async () => {
     setIsRestoring(true);
     try {
-        // Step 1: Wipe local assessments temporarily to ensure clean sync
-        const preWipeStudent = { ...student, assessments: [] };
-        await updateStudent(preWipeStudent);
-
-        // Step 2: Fetch clean data from Cloud Soul
+        // Step 1: Fetch data first without wiping anything
         const result = await getStudentSyncData(student.batch, student.id);
+        
         if (result.result === 'success' && result.data) {
-            // Step 3: Apply the cloud data exactly
-            await updateStudent(result.data);
+            // Step 2: Merge logic - Keep current non-assessment data but update logs from spreadsheet
+            const cloudData = result.data;
+            const updatedStudent: Student = {
+                ...student,
+                assessments: cloudData.assessments || [],
+                termAssessments: cloudData.termAssessments || []
+            };
+            
+            await updateStudent(updatedStudent);
             await refreshStudent();
-            alert("Sync Complete! Your dashboard now matches the Spreadsheet exactly.");
+            alert("Deep Sync Successful! Assessment logs reconstructed from Spreadsheet Soul.");
         } else {
-            alert("No data found in the spreadsheet for ID: " + student.id);
-            // Re-revert to old state if failed
-            await updateStudent(student);
+            alert("No spreadsheet logs found for ID: " + student.id + ". Ensure you have the correct Teacher's Link in Settings.");
         }
     } catch (e) {
-        alert("Restoration failed. Check your Teacher's Link in Settings.");
-        await updateStudent(student);
+        alert("Restoration failed. Check network connection and Teacher's Link.");
     } finally {
         setIsRestoring(false);
     }
@@ -165,7 +166,7 @@ const AssessmentRecords: React.FC = () => {
     <div className="space-y-8">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">Assessment Records & Reflections</h2>
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">Assessment Records</h2>
             <p className="text-lg text-gray-500 font-medium">Tracking attainment for <span className="text-indigo-600 font-black">{student.name} ({student.id})</span></p>
         </div>
         <div className="flex gap-2">

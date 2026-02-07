@@ -62,6 +62,15 @@ function handleRequest(e) {
     else if (action === 'get_challenge_library') {
       data = loadFile(mainFolder, "challenge_library.json");
     }
+    else if (action === 'sync_peer_marking') {
+      const batchFolder = getOrCreateFolderIn(mainFolder, postData.batchId);
+      saveFile(batchFolder, "peer_marking_tasks.json", postData.data);
+      data = "OK";
+    }
+    else if (action === 'get_peer_marking') {
+      const batchFolder = getOrCreateFolderIn(mainFolder, params.batchId);
+      data = loadFile(batchFolder, "peer_marking_tasks.json");
+    }
     else if (action === 'student_sync') {
       const batchFolder = getOrCreateFolderIn(mainFolder, postData.batchId);
       saveFile(batchFolder, "student_" + postData.studentId + ".json", postData.data);
@@ -74,13 +83,13 @@ function handleRequest(e) {
       const recoveredAssessments = recoverAssessmentsFromSheet(params.studentId);
       const recoveredTerms = recoverTermExamsFromSheet(params.studentId);
 
-      // FORCE OVERWRITE: If spreadsheet has data, we MUST use it to clear ghost data
       if (recoveredAssessments.length > 0 || recoveredTerms.length > 0) {
          if (!studentJson) {
             studentJson = {
               id: params.studentId,
               batch: params.batchId,
               name: recoveredAssessments.length > 0 ? recoveredAssessments[0].studentName : "Recovered Student",
+              curriculum: params.batchId.toLowerCase().includes('myp') ? "MYP" : "IGCSE",
               assessments: [],
               termAssessments: [],
               topics: [],
@@ -89,10 +98,8 @@ function handleRequest(e) {
               tuitionReflections: []
             };
          }
-         // Replace with clean spreadsheet data
          studentJson.assessments = recoveredAssessments;
          studentJson.termAssessments = recoveredTerms;
-         
          studentJson.assessments.sort((a,b) => b.date.localeCompare(a.date));
          studentJson.termAssessments.sort((a,b) => b.date.localeCompare(a.date));
       }
@@ -101,12 +108,40 @@ function handleRequest(e) {
     else if (action === 'get_batch_students') {
       const batchFolder = getOrCreateFolderIn(mainFolder, params.batchId);
       const files = batchFolder.getFiles();
-      const students = [];
+      const studentMap = {};
+      
+      // Phase 1: Load JSON Files
       while (files.hasNext()) {
         const file = files.next();
-        if (file.getName().startsWith("student_")) students.push(JSON.parse(file.getBlob().getDataAsString()));
+        if (file.getName().startsWith("student_")) {
+           try {
+             const s = JSON.parse(file.getBlob().getDataAsString());
+             studentMap[s.id] = s;
+           } catch(err) {}
+        }
       }
-      data = students;
+      
+      // Phase 2: Discovery from Spreadsheet (Ghosts)
+      const ghosts = discoverStudentsFromSheets(params.batchId);
+      ghosts.forEach(g => {
+        if (!studentMap[g.id]) {
+          studentMap[g.id] = {
+            id: g.id,
+            name: g.name,
+            batch: params.batchId,
+            curriculum: params.batchId.toLowerCase().includes('myp') ? "MYP" : "IGCSE",
+            assessments: [],
+            termAssessments: [],
+            topics: [],
+            attendance: [],
+            tuitionTasks: [],
+            tuitionReflections: [],
+            isGhost: true
+          };
+        }
+      });
+      
+      data = Object.values(studentMap);
     }
     else if (action === 'log_reflection') {
       logToSheet(postData.sheetName, postData.data);
@@ -171,6 +206,33 @@ function logToSheet(sheetName, dataObj) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn() || 1).getValues()[0];
   const row = headers.map(h => dataObj[h] || "");
   sheet.appendRow(row);
+}
+
+function discoverStudentsFromSheets(batchId) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ['AssessmentReflections', 'TermExamReflections'];
+  const students = {};
+  
+  sheets.forEach(name => {
+    const s = ss.getSheetByName(name);
+    if (!s) return;
+    const vals = s.getDataRange().getValues();
+    if (vals.length <= 1) return;
+    const headers = vals[0].map(h => String(h).trim().toLowerCase());
+    const idIdx = headers.indexOf('studentid');
+    const nameIdx = headers.indexOf('studentname');
+    const batchIdx = headers.indexOf('batch');
+    
+    for(let i=1; i<vals.length; i++) {
+       const b = String(vals[i][batchIdx]).trim();
+       if (b === batchId) {
+          const id = String(vals[i][idIdx]).trim();
+          const nm = nameIdx !== -1 ? String(vals[i][nameIdx]).trim() : "Recovered";
+          if (!students[id]) students[id] = { id, name: nm };
+       }
+    }
+  });
+  return Object.values(students);
 }
 
 function deleteRowFromSheet(sheetName, studentId, matchParams) {
@@ -373,7 +435,7 @@ const AdminSettings: React.FC = () => {
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(APP_SCRIPT_CODE);
-    alert("Script V8.0 copied! IMPORTANT: Clear Code.gs completely and paste this. Do NOT copy the whole page.");
+    alert("Script V9.0 copied! This version allows recovery from Spreadsheet Logs even if profiles are missing.");
   };
 
   return (
@@ -426,20 +488,20 @@ const AdminSettings: React.FC = () => {
             <div className="bg-white p-8 rounded-[2rem] shadow-xl border border-blue-100">
                 <div className="flex items-center gap-3 mb-6">
                     <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><CodeIcon size={24}/></div>
-                    <h2 className="text-2xl font-bold text-gray-800">Automation Script Code (V8.0)</h2>
+                    <h2 className="text-2xl font-bold text-gray-800">Automation Script Code (V9.0)</h2>
                 </div>
                 
                 <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl mb-6 flex gap-4 items-start">
                     <AlertTriangle className="text-amber-600 shrink-0 mt-1" size={24}/>
                     <div>
-                        <p className="text-amber-900 font-black text-sm uppercase tracking-tight">Crucial Instructions</p>
-                        <p className="text-amber-800 text-sm font-medium leading-relaxed">Do <b>NOT</b> copy this entire page into Google Apps Script. Only click the "Copy Script" button below, which extracts the pure JavaScript code required for the server.</p>
+                        <p className="text-amber-900 font-black text-sm uppercase tracking-tight">Ghost Discovery Enabled</p>
+                        <p className="text-amber-800 text-sm font-medium leading-relaxed">This script can discover and reconstruct student data solely from Spreadsheet activity logs, providing a "Deep Recovery" even if JSON profiles are deleted.</p>
                     </div>
                 </div>
                 
                 <div className="bg-slate-900 rounded-2xl p-6 relative overflow-hidden">
                     <div className="flex justify-between items-center mb-4 relative z-10">
-                        <span className="text-blue-400 font-mono text-xs font-bold uppercase tracking-widest flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-400"></div> skm_sync_engine_v8_0.gs</span>
+                        <span className="text-blue-400 font-mono text-xs font-bold uppercase tracking-widest flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-400"></div> skm_sync_engine_v9_0.gs</span>
                         <button onClick={handleCopyCode} className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition-colors shadow-lg">
                             <Copy size={16}/> Copy Script Code
                         </button>

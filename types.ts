@@ -186,6 +186,21 @@ export interface SyllabusPortion {
   lastUpdated: number;
 }
 
+// Added PeerMarkingTask interface for collaborative student interactions
+export interface PeerMarkingTask {
+  id: string;
+  title: string;
+  batchId: string;
+  studentId: string;
+  studentName: string;
+  assignedMarkerId: string;
+  assignedMarkerName: string;
+  scriptUrl: string;
+  schemeUrl: string;
+  status: 'Pending' | 'Marking' | 'Completed';
+  dateSubmitted: number;
+}
+
 export interface Student {
   id: string;
   username?: string; 
